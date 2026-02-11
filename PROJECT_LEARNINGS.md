@@ -1073,6 +1073,73 @@ nanobot gateway --verbose
 
 ---
 
+## ⚠️ Concurrency & Thread Safety
+
+### Overview
+
+While nanobot runs in a **single process with asyncio**, there are **several race conditions** due to shared mutable state accessed at `await` yield points.
+
+### Key Findings
+
+1. **AsyncIO Queues** ✅ SAFE
+   - `asyncio.Queue` is coroutine-safe by design
+   - No issues with inbound/outbound message queues
+
+2. **SessionManager** ⚠️ RACE CONDITIONS
+   - Cache access without locks
+   - File writes without locking
+   - Can lose messages if same user sends rapid messages
+   - **Fix needed:** Add `asyncio.Lock` per session
+
+3. **MemoryStore** ⚠️ RACE CONDITIONS
+   - File read-modify-write without locks
+   - Can lose memory entries during parallel writes
+   - **Fix needed:** Use file locking or atomic append
+
+4. **CronService** ⚠️ POTENTIAL ISSUES
+   - Store modifications without locks
+   - Can lose job additions/removals
+   - **Fix needed:** Add lock around store operations
+
+5. **Mochat Channel** ✅ CORRECT
+   - Uses `asyncio.Lock` properly!
+   - Per-target locks prevent message ordering issues
+   - **Best practice example**
+
+### Why These Exist
+
+```python
+# The Problem: Yield Points
+if key not in cache:       # ← Atomic check
+    await file.read()      # ← YIELD! Another coroutine runs here
+    cache[key] = value     # ← State may have changed
+```
+
+- Developers assume "single-threaded = safe"
+- Forgot that `await` creates yield points
+- File I/O is a major yield point
+- Race conditions are rare and hard to test
+
+### Impact Assessment
+
+| Component | Risk | Impact | Priority |
+|-----------|------|--------|----------|
+| SessionManager Cache | HIGH | Lost messages | HIGH |
+| MemoryStore Append | HIGH | Lost memories | HIGH |
+| SessionManager Files | MEDIUM | File corruption | MEDIUM |
+| CronService | MEDIUM | Lost jobs | MEDIUM |
+| MessageBus | LOW | Rare issues | LOW |
+
+### Detailed Analysis
+
+See [CONCURRENCY_ANALYSIS.md](CONCURRENCY_ANALYSIS.md) for:
+- Complete race condition analysis
+- Code examples with fixes
+- Stress testing patterns
+- Recommended architectural improvements
+
+---
+
 ## 🎓 Learning Outcomes
 
 ### What We Learned
@@ -1086,6 +1153,7 @@ nanobot gateway --verbose
    - Entire system runs in one Python process
    - Uses asyncio for concurrency
    - WhatsApp bridge is the only external process
+   - **Concurrency issues exist** at await yield points
 
 3. **Entry Points:**
    - CLI for direct interaction
@@ -1096,6 +1164,7 @@ nanobot gateway --verbose
    - Channels → Bus → Agent → Tools
    - Sessions for persistence
    - Cron for scheduling
+   - **Race conditions possible** in session/memory/cron
 
 5. **Extension Points:**
    - Adding channels via `Channel` base class
@@ -1106,6 +1175,11 @@ nanobot gateway --verbose
    - JSON-based config with Pydantic validation
    - Workspace for agent context
    - Provider auto-configuration
+
+7. **Thread Safety:**
+   - Minimal explicit locking (only Mochat channel)
+   - Relies on asyncio cooperative multitasking
+   - Several identified race conditions need fixes
 
 ---
 

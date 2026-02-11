@@ -213,10 +213,21 @@ class ExecToolConfig(BaseModel):
     timeout: int = 60
 
 
+class BrowserToolConfig(BaseModel):
+    """Browser automation tool configuration."""
+    enabled: bool = True
+    headless: bool = True
+    timeout: int = 30000  # 30 seconds in milliseconds
+    allowed_domains: list[str] = Field(default_factory=list)  # Empty = allow all domains
+    max_sessions: int = 5
+    session_timeout: int = 300  # 5 minutes in seconds
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    browser: BrowserToolConfig = Field(default_factory=BrowserToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 
