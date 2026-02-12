@@ -220,7 +220,7 @@ class BrowserToolConfig(BaseModel):
     timeout: int = 30000  # 30 seconds in milliseconds
     allowed_domains: list[str] = Field(default_factory=list)  # Empty = allow all domains
     max_sessions: int = 5
-    session_timeout: int = 300  # 5 minutes in seconds
+    session_timeout: int = 60  # 1 minute in seconds (reduced from 5 minutes)
 
 
 class ToolsConfig(BaseModel):

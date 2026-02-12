@@ -40,7 +40,7 @@ class BrowserTool(Tool):
 
     def __init__(
         self,
-        headless: bool = True,
+        headless: bool = False,
         timeout: int = 30000,
         allowed_domains: list[str] | None = None,
         max_sessions: int = 5,
@@ -159,45 +159,48 @@ Sessions persist across calls - reuse session_id to continue in the same browser
             # Execute action
             timeout_ms = timeout or self.timeout
 
+            # Prepare result with session_id prefix for all actions
+            result_prefix = f"[Session: {session.session_id}]\n"
+
             if action == "navigate":
-                return await self._navigate(session, url, wait_until, timeout_ms)
+                result = await self._navigate(session, url, wait_until, timeout_ms)
 
             elif action == "click":
-                return await self._click(session, selector, text, timeout_ms)
+                result = await self._click(session, selector, text, timeout_ms)
 
             elif action == "type":
-                return await self._type(session, selector, text, timeout_ms)
+                result = await self._type(session, selector, text, timeout_ms)
 
             elif action == "fill":
-                return await self._fill(session, selector, text, timeout_ms)
+                result = await self._fill(session, selector, text, timeout_ms)
 
             elif action == "screenshot":
-                return await self._screenshot(session, full_page)
+                result = await self._screenshot(session, full_page)
 
             elif action == "extract_text":
-                return await self._extract_text(session, selector)
+                result = await self._extract_text(session, selector)
 
             elif action == "extract_html":
-                return await self._extract_html(session, selector)
+                result = await self._extract_html(session, selector)
 
             elif action == "wait_for":
-                return await self._wait_for(session, selector, timeout_ms)
+                result = await self._wait_for(session, selector, timeout_ms)
 
             elif action == "scroll":
-                return await self._scroll(session, selector)
+                result = await self._scroll(session, selector)
 
             elif action == "go_back":
                 await session.page.go_back(timeout=timeout_ms)
                 session.current_url = session.page.url
-                return f"Navigated back to: {session.page.url}"
+                result = f"Navigated back to: {session.page.url}"
 
             elif action == "go_forward":
                 await session.page.go_forward(timeout=timeout_ms)
                 session.current_url = session.page.url
-                return f"Navigated forward to: {session.page.url}"
+                result = f"Navigated forward to: {session.page.url}"
 
             elif action == "get_url":
-                return f"Current URL: {session.page.url}\nTitle: {await session.page.title()}"
+                result = f"Current URL: {session.page.url}\nTitle: {await session.page.title()}"
 
             elif action == "close_session":
                 await self._close_session(session.session_id)
@@ -205,6 +208,9 @@ Sessions persist across calls - reuse session_id to continue in the same browser
 
             else:
                 return f"Error: Unknown action '{action}'"
+
+            # Return result with session_id so it can be reused
+            return result_prefix + result
 
         except Exception as e:
             logger.error(f"Browser tool error: {e}")
@@ -478,6 +484,29 @@ Note: You can analyze this screenshot if you have vision capabilities."""
             # Extract key information
             summary_parts = []
 
+            # Get page text content (first 1000 chars for context)
+            try:
+                body = await page.query_selector("body")
+                if body:
+                    text = await body.inner_text()
+                    if text:
+                        # Clean up and truncate
+                        text = " ".join(text.split())[:1000]
+                        summary_parts.append(f"Page text preview:\n{text}...")
+            except:
+                pass
+
+            # Add headings for structure
+            headings = await page.query_selector_all("h1, h2, h3")
+            if headings:
+                heading_texts = []
+                for h in headings[:5]:
+                    text = await h.text_content()
+                    if text:
+                        heading_texts.append(text.strip())
+                if heading_texts:
+                    summary_parts.append(f"\nHeadings: {', '.join(heading_texts)}")
+
             # Add interactive elements
             buttons = await page.query_selector_all("button, input[type='button'], input[type='submit']")
             if buttons:
@@ -487,7 +516,7 @@ Note: You can analyze this screenshot if you have vision capabilities."""
                     if text:
                         button_texts.append(text.strip())
                 if button_texts:
-                    summary_parts.append(f"Buttons: {', '.join(button_texts)}")
+                    summary_parts.append(f"\nButtons: {', '.join(button_texts)}")
 
             # Add input fields
             inputs = await page.query_selector_all("input[type='text'], input[type='email'], input[type='search'], textarea")
@@ -498,12 +527,12 @@ Note: You can analyze this screenshot if you have vision capabilities."""
                     if name:
                         input_names.append(name.strip())
                 if input_names:
-                    summary_parts.append(f"Input fields: {', '.join(input_names)}")
+                    summary_parts.append(f"\nInput fields: {', '.join(input_names)}")
 
-            # Add links
+            # Add links (just count)
             links = await page.query_selector_all("a[href]")
             if len(links) > 0:
-                summary_parts.append(f"Links: {len(links)} links found")
+                summary_parts.append(f"\n{len(links)} links found on page")
 
             return "\n".join(summary_parts) if summary_parts else "Page loaded successfully"
 
@@ -528,8 +557,19 @@ Note: You can analyze this screenshot if you have vision capabilities."""
             if age > self.session_timeout:
                 to_remove.append(session_id)
 
+        if to_remove:
+            logger.info(f"Cleaning up {len(to_remove)} idle browser session(s)")
+
         for session_id in to_remove:
             await self._close_session(session_id)
+
+    async def close_all_sessions(self) -> None:
+        """Close all active browser sessions immediately."""
+        session_count = len(self._sessions)
+        if session_count > 0:
+            logger.info(f"Closing all {session_count} browser session(s)")
+            for session_id in list(self._sessions.keys()):
+                await self._close_session(session_id)
 
     async def cleanup(self) -> None:
         """Cleanup all browser resources."""

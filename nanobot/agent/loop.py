@@ -44,11 +44,12 @@ class AgentLoop:
         max_iterations: int = 20,
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
+        browser_config: Any = None,
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
     ):
-        from nanobot.config.schema import ExecToolConfig
+        from nanobot.config.schema import ExecToolConfig, BrowserToolConfig
         from nanobot.cron.service import CronService
         self.bus = bus
         self.provider = provider
@@ -57,6 +58,7 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
+        self.browser_config = browser_config or BrowserToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         
@@ -109,16 +111,23 @@ class AgentLoop:
             self.tools.register(CronTool(self.cron_service))
 
         # Browser tool (for web automation)
-        try:
-            self.tools.register(BrowserTool(
-                headless=True,
-                timeout=30000,
-                allowed_domains=[],  # Empty list = allow all domains
-                max_sessions=5,
-            ))
-            logger.info("Browser tool registered")
-        except ImportError:
-            logger.warning("Browser tool not available (playwright not installed)")
+        if self.browser_config.enabled:
+            try:
+                browser_tool = BrowserTool(
+                    headless=self.browser_config.headless,
+                    timeout=self.browser_config.timeout,
+                    allowed_domains=self.browser_config.allowed_domains,
+                    max_sessions=self.browser_config.max_sessions,
+                    session_timeout=self.browser_config.session_timeout,
+                )
+                self.tools.register(browser_tool)
+                self._browser_tool = browser_tool  # Keep reference for cleanup
+                logger.info(f"Browser tool registered (headless={self.browser_config.headless}, session_timeout={self.browser_config.session_timeout}s)")
+            except ImportError:
+                logger.warning("Browser tool not available (playwright not installed)")
+                self._browser_tool = None
+        else:
+            self._browser_tool = None
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -149,10 +158,17 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 continue
     
-    def stop(self) -> None:
-        """Stop the agent loop."""
+    async def stop(self) -> None:
+        """Stop the agent loop and cleanup resources."""
         self._running = False
         logger.info("Agent loop stopping")
+
+        # Cleanup browser sessions
+        if self._browser_tool:
+            try:
+                await self._browser_tool.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up browser tool: {e}")
     
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
@@ -254,7 +270,14 @@ class AgentLoop:
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content)
         self.sessions.save(session)
-        
+
+        # Cleanup idle browser sessions after message processing
+        if self._browser_tool:
+            try:
+                await self._browser_tool._cleanup_old_sessions()
+            except Exception as e:
+                logger.debug(f"Browser cleanup error: {e}")
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
